@@ -1,0 +1,75 @@
+{
+  "name": "lease-report-app",
+  "version": "1.0.0",
+  "description": "特販部リース会社実績レポート デスクトップアプリ",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently \"npx webpack serve --mode development\" \"wait-on http://localhost:9000 && electron . --dev\"",
+    "build:renderer": "npx webpack --mode production",
+    "build": "npm run build:renderer && electron-builder",
+    "pack": "electron-builder --dir"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/preset-react": "^7.23.3",
+    "autoprefixer": "^10.4.18",
+    "babel-loader": "^9.1.3",
+    "concurrently": "^8.2.2",
+    "css-loader": "^6.10.0",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.0",
+    "html-webpack-plugin": "^5.6.0",
+    "postcss": "^8.4.35",
+    "postcss-loader": "^8.1.1",
+    "sharp": "^0.34.5",
+    "style-loader": "^3.3.4",
+    "tailwindcss": "^3.4.1",
+    "wait-on": "^7.2.0",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.0.0"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "html2pdf.js": "^0.10.1",
+    "lucide-react": "^0.344.0",
+    "officecrypto-tool": "^0.0.19",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.12.0",
+    "xlsx": "^0.18.5",
+    "xlsx-populate": "^1.21.0"
+  },
+  "build": {
+    "appId": "com.company.lease-report",
+    "productName": "特販部リース実績レポート",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "build/**/*",
+      "!src/**",
+      "!*.bat",
+      "!*.md",
+      "!_*.js",
+      "!webpack.config.js",
+      "!tailwind.config.js",
+      "!postcss.config.js",
+      "!.babelrc"
+    ],
+    "asar": true,
+    "win": {
+      "target": "dir",
+      "icon": "app-icon.ico",
+      "signAndEditExecutable": false
+    },
+    "forceCodeSigning": false
+  }
+}
