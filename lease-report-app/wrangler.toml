@@ -1,0 +1,11 @@
+# Cloudflare Workers（Git 連携）
+# ダッシュボード: Build command = npm run build / Deploy command = npx wrangler deploy
+# 名前は Workers プロジェクトの Name（例: kasouhinuriagezumiweb）と一致させる
+# https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/
+
+name = "kasouhinuriagezumiweb"
+compatibility_date = "2025-01-01"
+
+[assets]
+directory = "./build"
+not_found_handling = "single-page-application"

@@ -1,23 +1,108 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-} from 'recharts';
-import {
   ChevronRight, Building2, Settings, User, Store,
   ArrowUpRight, ArrowDownRight, LayoutDashboard, Database,
   Calendar, FolderOpen, RefreshCcw, CheckCircle2, FileText, FileSpreadsheet,
   ListFilter, AlertCircle, Loader2, XCircle, ChevronLeft, ArrowUpDown, Eye, EyeOff,
-  CheckSquare, Square,
+  CheckSquare, Square, Package,
 } from 'lucide-react';
 import {
   filterRows, aggregateByBranch, aggregateByOrderer, aggregateByCustomer,
   aggregateByCustomerInBranch, aggregateByOrdererForCustomer,
+  aggregateByProductByYear,
   generatePivotData, calcYoY, calcMargin, formatCurrency, formatCurrencyFull,
   generateCsvContent,
 } from './utils/aggregator';
 
-// Electron API (preloadで公開)
-const api = window.electronAPI || null;
+/** 表示幅: 全角=1、ASCII・半角カナ=0.5（全角15文字分まで） */
+function charDisplayUnit(ch) {
+  const c = ch.codePointAt(0);
+  if (c <= 0x007e) return 0.5;
+  if (c >= 0xff61 && c <= 0xff9f) return 0.5;
+  return 1;
+}
+function truncateByDisplayWidth(str, maxUnits) {
+  if (!str) return '';
+  let units = 0;
+  let out = '';
+  for (const ch of str) {
+    const u = charDisplayUnit(ch);
+    if (units + u > maxUnits) break;
+    out += ch;
+    units += u;
+  }
+  return out;
+}
+
+/* global __LEASE_REPORT_API_BASE__ */
+
+function webApiRoot() {
+  const b = typeof __LEASE_REPORT_API_BASE__ !== 'undefined' ? __LEASE_REPORT_API_BASE__ : '';
+  return b ? `${b}/api` : '/api';
+}
+
+function shouldUseWebApi() {
+  if (typeof window === 'undefined') return false;
+  if (window.electronAPI?.isElectron) return false;
+  if (window.location.protocol === 'file:') return false;
+  return true;
+}
+
+function createWebApi() {
+  const root = webApiRoot();
+  const withAuth = (headers = {}) => {
+    const t = window.__LEASE_REPORT_API_TOKEN__;
+    if (t) headers.Authorization = `Bearer ${t}`;
+    return headers;
+  };
+
+  return {
+    isElectron: false,
+    loadExcelData: async (dirPath, forceRefresh) => {
+      const r = await fetch(`${root}/load-excel`, {
+        method: 'POST',
+        headers: withAuth({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ dirPath, forceRefresh }),
+      });
+      let data = {};
+      try {
+        data = await r.json();
+      } catch {
+        data = {};
+      }
+      if (!r.ok) {
+        return { success: false, error: data.error || `HTTP ${r.status}` };
+      }
+      return data;
+    },
+    checkPath: async (dirPath) => {
+      const r = await fetch(`${root}/check-path?${new URLSearchParams({ path: dirPath })}`, {
+        headers: withAuth({}),
+      });
+      return r.json();
+    },
+    selectFolder: async () => ({ success: false }),
+    saveCsv: async (csvContent) => {
+      const bom = '\uFEFF';
+      const blob = new Blob([bom + csvContent], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `リース実績レポート_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { success: true, path: 'ブラウザのダウンロード' };
+    },
+    savePdf: async () => {
+      window.print();
+      return { success: true, path: '' };
+    },
+  };
+}
+
+const api = typeof window !== 'undefined' && window.electronAPI
+  ? window.electronAPI
+  : (shouldUseWebApi() ? createWebApi() : null);
 
 // デフォルトパス
 const DEFAULT_PATH = '\\\\192.1.1.103\\share\\特販共有\\見積\\売上データ';
@@ -40,7 +125,7 @@ const App = () => {
   const [showProfit, setShowProfit] = useState(true);
   const [hierarchyOrder, setHierarchyOrder] = useState('orderer_first'); // 'orderer_first' | 'customer_first'
   const [checkedItems, setCheckedItems] = useState(new Set()); // チェックで選択された項目（合計に反映）
-  const [activeView, setActiveView] = useState({ branchName: null, secondName: null }); // branchName必須、secondNameは担当者or顧客
+  const [activeView, setActiveView] = useState({ branchName: null, secondName: null, thirdName: null });
 
   const printRef = useRef(null);
 
@@ -152,16 +237,16 @@ const App = () => {
     }
   }, [rawData]);
 
-  // 階層順の変更時は secondName のみリセット（部署は選択しっぱなし）
+  // 階層順の変更時は secondName・thirdName をリセット
   useEffect(() => {
-    setActiveView(prev => ({ ...prev, secondName: null }));
+    setActiveView(prev => ({ ...prev, secondName: null, thirdName: null }));
   }, [hierarchyOrder]);
 
   // テーブルデータ変更時（ドリルダウン時など）にチェックを全選択に初期化
   useEffect(() => {
     if (!currentTableData.length) return;
     setCheckedItems(new Set(currentTableData.map(d => d.name)));
-  }, [activeView.branchName, activeView.secondName, hierarchyOrder, currentTableData]);
+  }, [activeView.branchName, activeView.secondName, activeView.thirdName, hierarchyOrder, currentTableData]);
 
   // ===== フィルタ済みデータ =====
   const filteredRows = useMemo(() => {
@@ -186,15 +271,17 @@ const App = () => {
   // ===== ドリルダウンデータ（階層順に応じて集計） =====
   const currentTableData = useMemo(() => {
     if (!filteredRows.length || !years.length) return [];
-    const { branchName, secondName } = activeView;
+    const { branchName, secondName, thirdName } = activeView;
     if (!branchName) return aggregateByBranch(filteredRows, years);
     if (hierarchyOrder === 'orderer_first') {
       if (!secondName) return aggregateByOrderer(filteredRows, years, branchName);
-      return aggregateByCustomer(filteredRows, years, branchName, secondName);
+      if (!thirdName) return aggregateByCustomer(filteredRows, years, branchName, secondName);
+      return aggregateByProductByYear(filteredRows, years, branchName, secondName, thirdName, 'orderer_first');
     }
     // customer_first
     if (!secondName) return aggregateByCustomerInBranch(filteredRows, years, branchName);
-    return aggregateByOrdererForCustomer(filteredRows, years, branchName, secondName);
+    if (!thirdName) return aggregateByOrdererForCustomer(filteredRows, years, branchName, secondName);
+    return aggregateByProductByYear(filteredRows, years, branchName, secondName, thirdName, 'customer_first');
   }, [filteredRows, years, activeView, hierarchyOrder]);
 
   // ===== ピボットデータ =====
@@ -228,38 +315,31 @@ const App = () => {
     return data;
   }, [filteredRows, years, pivotBranch, pivotSort]);
 
-  // ===== チャートデータ =====
-  const chartData = useMemo(() => {
-    if (!currentTableData.length || !years.length) return [];
-    const latestYear = years[years.length - 1];
-    return currentTableData.slice(0, 8).map(item => ({
-      name: item.name.length > 10 ? item.name.slice(0, 10) + '…' : item.name,
-      fullName: item.name,
-      [`${latestYear}年 売上`]: item.sales[latestYear] || 0,
-      [`${latestYear}年 粗利`]: item.profit[latestYear] || 0,
-    }));
-  }, [currentTableData, years]);
-
   // ===== ハンドラ =====
   const isLeafLevel = useMemo(() => {
-    const { branchName, secondName } = activeView;
-    return !!branchName && !!secondName; // 第3階層はドリル不可
+    const { branchName, secondName, thirdName } = activeView;
+    return !!branchName && !!secondName && !!thirdName; // 第4階層はドリル不可
   }, [activeView]);
 
   const handleDrillDown = (item) => {
     if (isLeafLevel) return;
-    if (!activeView.branchName) {
-      setActiveView({ branchName: item.name, secondName: null });
+    const { branchName, secondName } = activeView;
+    if (!branchName) {
+      setActiveView({ branchName: item.name, secondName: null, thirdName: null });
+    } else if (!secondName) {
+      setActiveView({ ...activeView, secondName: item.name, thirdName: null });
     } else {
-      setActiveView({ ...activeView, secondName: item.name });
+      setActiveView({ ...activeView, thirdName: item.name });
     }
   };
 
   const handleBreadcrumb = (target) => {
     if (target === 'branch') {
-      setActiveView({ branchName: null, secondName: null });
+      setActiveView({ branchName: null, secondName: null, thirdName: null });
+    } else if (target === 'second') {
+      setActiveView(prev => ({ ...prev, secondName: null, thirdName: null }));
     } else {
-      setActiveView(prev => ({ ...prev, secondName: null }));
+      setActiveView(prev => ({ ...prev, thirdName: null }));
     }
   };
 
@@ -276,7 +356,6 @@ const App = () => {
         alert(`CSVを保存しました: ${result.path}`);
       }
     } else {
-      // ブラウザ用フォールバック
       const bom = '\uFEFF';
       const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -325,15 +404,17 @@ const App = () => {
 
   // ===== レンダリング =====
   const levelInfo = useMemo(() => {
-    const { branchName, secondName } = activeView;
+    const { branchName, secondName, thirdName } = activeView;
     if (!branchName) return { icon: Building2, label: '部店名', title: '部店別 年次実績比較' };
     if (hierarchyOrder === 'orderer_first') {
       if (!secondName) return { icon: Store, label: '注文者名', title: `${branchName} 内 注文者実績` };
-      return { icon: User, label: '顧客名', title: `${secondName} 内 顧客実績` };
+      if (!thirdName) return { icon: User, label: '顧客名', title: `${secondName} 内 顧客実績` };
+      return { icon: Package, label: '品番', title: `${thirdName} 内 品番別実績` };
     }
     // customer_first
     if (!secondName) return { icon: User, label: '顧客名', title: `${branchName} 内 顧客実績` };
-    return { icon: Store, label: '注文者名', title: `${secondName} 内 担当者一覧` };
+    if (!thirdName) return { icon: Store, label: '注文者名', title: `${secondName} 内 担当者一覧` };
+    return { icon: Package, label: '品番', title: `${thirdName} 内 品番別実績` };
   }, [activeView, hierarchyOrder]);
 
   const LevelIcon = levelInfo.icon;
@@ -607,7 +688,6 @@ const App = () => {
             {viewMode === 'dashboard' ? (
               <DashboardView
                 data={currentTableData}
-                chartData={chartData}
                 years={years}
                 activeView={activeView}
                 hierarchyOrder={hierarchyOrder}
@@ -654,6 +734,7 @@ const App = () => {
           networkPath={networkPath}
           onPathChange={setNetworkPath}
           onSelectFolder={handleSelectFolder}
+          showFolderPicker={Boolean(api?.isElectron)}
           onClose={() => setIsConfigOpen(false)}
           onSave={handleConfigSave}
         />
@@ -714,7 +795,7 @@ const LoadingScreen = () => (
 
 // ===== ダッシュボードビュー =====
 const DashboardView = ({
-  data, chartData, years, activeView, hierarchyOrder, onHierarchyOrderChange,
+  data, years, activeView, hierarchyOrder, onHierarchyOrderChange,
   levelInfo, LevelIcon, isLeafLevel,
   checkedItems, onCheckedChange,
   onDrillDown, onBreadcrumb, onSavePdf, onSaveCsv,
@@ -786,8 +867,21 @@ const DashboardView = ({
       {activeView.secondName && (
         <>
           <ChevronRight size={14} className="text-slate-300" />
-          <span className="text-blue-600 flex items-center gap-1">
+          <button
+            onClick={() => onBreadcrumb('third')}
+            className={`flex items-center gap-1 transition-colors ${
+              !activeView.thirdName ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
             {hierarchyOrder === 'orderer_first' ? <User size={16} /> : <Store size={16} />} {activeView.secondName}
+          </button>
+        </>
+      )}
+      {activeView.thirdName && (
+        <>
+          <ChevronRight size={14} className="text-slate-300" />
+          <span className="text-blue-600 flex items-center gap-1">
+            <Package size={16} /> {activeView.thirdName}
           </span>
         </>
       )}
@@ -958,6 +1052,26 @@ const DashboardView = ({
                         />
                       )}
                     </div>
+                    {isLeafLevel && item.productName && (() => {
+                      const truncated = truncateByDisplayWidth(item.productName, 15);
+                      const isTruncated = truncated !== item.productName;
+                      return (
+                        <div
+                          className="text-xs text-slate-500 mt-0.5 font-medium"
+                          title={isTruncated ? item.productName : undefined}
+                        >
+                          {truncated}{isTruncated ? '…' : ''}
+                        </div>
+                      );
+                    })()}
+                    {isLeafLevel && (() => {
+                      const totalQty = years.reduce((s, y) => s + (item.quantity?.[y] || 0), 0);
+                      return totalQty > 0 ? (
+                        <div className="text-xs text-indigo-500 font-bold mt-0.5">
+                          受注数: {totalQty.toLocaleString()}
+                        </div>
+                      ) : null;
+                    })()}
                     {!isLeafLevel && (
                       <div className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-tighter no-print">
                         クリックで詳細を表示
@@ -1015,36 +1129,6 @@ const DashboardView = ({
       </div>
     </div>
 
-    {/* Chart */}
-    {chartData.length > 0 && (
-      <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-slate-100 no-print">
-        <h4 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2">
-          <div className="w-1.5 h-6 bg-blue-500 rounded-full" />
-          売上トレンド可視化
-        </h4>
-        <div className="h-72 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontWeight: 700, fontSize: 12 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontWeight: 700, fontSize: 12 }} tickFormatter={v => fmtAmtShort(v)} />
-              <Tooltip
-                contentStyle={{ borderRadius: '1.5rem', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)', padding: '1.5rem' }}
-                cursor={{ fill: '#f8fafc' }}
-                formatter={(value) => fmtAmt(value)}
-              />
-              <Legend iconType="circle" wrapperStyle={{ paddingTop: '2rem' }} />
-              {years.length > 0 && (
-                <>
-                  <Bar dataKey={`${years[years.length - 1]}年 売上`} fill="#3b82f6" radius={[6, 6, 0, 0]} barSize={24} />
-                  <Bar dataKey={`${years[years.length - 1]}年 粗利`} fill="#10b981" radius={[6, 6, 0, 0]} barSize={24} />
-                </>
-              )}
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    )}
   </div>
   );
 };
@@ -1227,7 +1311,7 @@ const PivotView = ({ data, years, branches, pivotBranch, onBranchChange, pivotSo
 };
 
 // ===== 設定モーダル =====
-const SettingsModal = ({ networkPath, onPathChange, onSelectFolder, onClose, onSave }) => (
+const SettingsModal = ({ networkPath, onPathChange, onSelectFolder, showFolderPicker, onClose, onSave }) => (
   <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fade-in">
     <div className="bg-white rounded-[3rem] w-full max-w-xl shadow-2xl animate-scale-in overflow-hidden">
       <div className="p-10 border-b border-slate-50 bg-slate-50/50 flex justify-between items-center">
@@ -1258,15 +1342,23 @@ const SettingsModal = ({ networkPath, onPathChange, onSelectFolder, onClose, onS
               className="flex-1 bg-slate-100 border-none rounded-[1.5rem] p-5 text-sm font-bold text-slate-700 focus:ring-4 focus:ring-blue-500/10 transition-all"
               placeholder="\\192.1.1.103\share\..."
             />
-            <button
-              onClick={onSelectFolder}
-              className="px-5 bg-slate-100 rounded-[1.5rem] text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-all font-bold text-sm flex items-center gap-2"
-            >
-              <FolderOpen size={16} /> 参照
-            </button>
+            {showFolderPicker ? (
+              <button
+                type="button"
+                onClick={onSelectFolder}
+                className="px-5 bg-slate-100 rounded-[1.5rem] text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-all font-bold text-sm flex items-center gap-2"
+              >
+                <FolderOpen size={16} /> 参照
+              </button>
+            ) : (
+              <span className="px-5 py-5 bg-slate-50 rounded-[1.5rem] text-[10px] font-bold text-slate-400 self-center max-w-[140px] leading-snug">
+                Web版はサーバーが読めるパスを入力
+              </span>
+            )}
           </div>
           <p className="text-[10px] text-slate-400 px-4 italic leading-relaxed">
             ※このパスにあるExcelファイル（.xlsx/.xls）を自動的に統合・解析します。
+            {!showFolderPicker && ' Web版ではアプリを動かしているサーバーから見えるパス（共有フォルダのUNC等）を指定してください。'}
           </p>
         </div>
 

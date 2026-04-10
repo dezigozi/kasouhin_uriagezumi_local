@@ -144,6 +144,41 @@ export function aggregateByOrdererForCustomer(rows, years, branchName, customerN
 }
 
 /**
+ * 第4階層: 品番別集計（年度別）
+ * hierarchyOrder='orderer_first': branchName→secondName(注文者)→thirdName(顧客)
+ * hierarchyOrder='customer_first': branchName→secondName(顧客)→thirdName(担当者)
+ */
+export function aggregateByProductByYear(rows, years, branchName, secondName, thirdName, hierarchyOrder) {
+  const filtered = rows.filter(r => {
+    if (r.branch !== branchName) return false;
+    if (hierarchyOrder === 'orderer_first') {
+      return r.ordererName === secondName && r.customerName === thirdName;
+    }
+    return r.customerName === secondName && r.ordererName === thirdName;
+  });
+  const map = {};
+  filtered.forEach(row => {
+    const key = row.productCode || '(品番なし)';
+    if (!map[key]) {
+      map[key] = { name: key, productName: '', sales: {}, profit: {}, quantity: {} };
+      years.forEach(y => { map[key].sales[y] = 0; map[key].profit[y] = 0; map[key].quantity[y] = 0; });
+    }
+    if (row.productName && !map[key].productName) {
+      map[key].productName = row.productName;
+    }
+    if (row.fiscalYear && years.includes(row.fiscalYear)) {
+      map[key].sales[row.fiscalYear] += row.sales;
+      map[key].profit[row.fiscalYear] += row.profit;
+      map[key].quantity[row.fiscalYear] += row.quantity || 0;
+    }
+  });
+  return Object.values(map).sort((a, b) => {
+    const latestYear = years[years.length - 1];
+    return (b.sales[latestYear] || 0) - (a.sales[latestYear] || 0);
+  });
+}
+
+/**
  * ピボットデータ生成: リース会社 > 部店 > 注文者 > 顧客 の一覧
  */
 export function generatePivotData(rows, years) {

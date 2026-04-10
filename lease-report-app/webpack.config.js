@@ -1,5 +1,9 @@
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
+
+const apiBase = (process.env.LEASE_REPORT_API_BASE || '').replace(/\/$/, '');
 
 module.exports = {
   entry: './src/index.js',
@@ -30,8 +34,19 @@ module.exports = {
     extensions: ['.js', '.jsx'],
   },
   plugins: [
+    new webpack.DefinePlugin({
+      __LEASE_REPORT_API_BASE__: JSON.stringify(apiBase),
+    }),
     new HtmlWebpackPlugin({
       template: './public/index.html',
+    }),
+    new CopyWebpackPlugin({
+      patterns: [{
+        from: 'public/_redirects',
+        to: '_redirects',
+        toType: 'file',
+        noErrorOnMissing: true,
+      }],
     }),
   ],
   devServer: {
@@ -39,6 +54,12 @@ module.exports = {
     hot: true,
     static: {
       directory: path.join(__dirname, 'public'),
+    },
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3001',
+        changeOrigin: true,
+      },
     },
   },
 };

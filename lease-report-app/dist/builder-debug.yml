@@ -5,6 +5,7 @@ x64:
     - '!dist{,/**/*}'
     - main.js
     - preload.js
+    - excelBackend.js
     - build/**/*
     - '!src/**'
     - '!*.bat'
@@ -26,6 +27,7 @@ x64:
     - '**/*'
     - main.js
     - preload.js
+    - excelBackend.js
     - build/**/*
     - '!src/**'
     - '!*.bat'
